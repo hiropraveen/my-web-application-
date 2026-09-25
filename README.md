@@ -1,2 +1,2 @@
 # my-web-application-
-to note my basic needs 
+To note the things to work with.
