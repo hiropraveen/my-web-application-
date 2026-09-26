@@ -78,6 +78,25 @@ body {
     opacity: 0.8;
 }
 
+/* SAVE INDICATOR */
+
+.save-indicator {
+    position: fixed;
+    top: 75px;
+    right: 25px;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--text);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 99;
+}
+
+.save-indicator.show {
+    opacity: 1;
+}
 
 /* LEFT PANEL */
 
@@ -706,6 +725,12 @@ textarea::placeholder {
     🌙 Dark Mode
 </button>
 
+<!-- SAVE INDICATOR -->
+
+<div class="save-indicator" id="saveIndicator">
+    💾 Saving...
+</div>
+
 
 <!-- FIRST PAGE -->
 
@@ -997,465 +1022,410 @@ textarea::placeholder {
 <script>
 
 
-/* DOCUMENT STORAGE */
+/* ============================================================================
+   USER PROGRESS PERSISTENCE SYSTEM
+   
+   Saves the following to localStorage:
+   - User name
+   - Profile photo (as base64)
+   - Theme preference
+   - All notes
+   - Uploaded documents (as base64)
+   - App state (which panel is shown)
+   ============================================================================ */
 
 let selectedDocuments = [];
 
-
 /* ELEMENTS */
+const photoInput = document.getElementById("photoInput");
+const documentInput = document.getElementById("documentInput");
+const nameInput = document.getElementById("nameInput");
+const notepad = document.getElementById("notepad");
+const saveIndicator = document.getElementById("saveIndicator");
 
-const photoInput =
-    document.getElementById("photoInput");
+/* ============================================================================
+   AUTO-SAVE TIMER SYSTEM
+   ============================================================================ */
 
-const documentInput =
-    document.getElementById("documentInput");
+let saveTimeout;
+let lastSavedTime = {};
 
-const nameInput =
-    document.getElementById("nameInput");
-
-
-/* THEME */
-
-function loadTheme() {
-
-    const savedTheme =
-        localStorage.getItem("theme");
-
-
-    if (savedTheme === "dark") {
-
-        document.body.classList.add("dark");
-
-
-        document.getElementById(
-            "themeButton"
-        ).textContent =
-            "☀️ Light Mode";
-
-    }
-
+function showSaveIndicator(message = "💾 Progress saved!") {
+    const indicator = document.getElementById("saveIndicator");
+    indicator.textContent = message;
+    indicator.classList.add("show");
+    
+    setTimeout(() => {
+        indicator.classList.remove("show");
+    }, 2000);
 }
 
-
-function toggleTheme() {
-
-    document.body.classList.toggle("dark");
-
-
-    const isDark =
-        document.body.classList.contains("dark");
-
-
-    if (isDark) {
-
-        localStorage.setItem(
-            "theme",
-            "dark"
-        );
-
-
-        document.getElementById(
-            "themeButton"
-        ).textContent =
-            "☀️ Light Mode";
-
-    } else {
-
-        localStorage.setItem(
-            "theme",
-            "light"
-        );
-
-
-        document.getElementById(
-            "themeButton"
-        ).textContent =
-            "🌙 Dark Mode";
-
-    }
-
+function debounceAutoSave() {
+    clearTimeout(saveTimeout);
+    
+    saveTimeout = setTimeout(() => {
+        saveAllProgress();
+        showSaveIndicator("💾 Progress saved!");
+    }, 1000);
 }
 
+/* ============================================================================
+   SAVE ALL USER PROGRESS
+   ============================================================================ */
 
-/* PHOTO UPLOAD */
+function saveAllProgress() {
+    try {
+        const userData = {
+            name: nameInput.value,
+            photo: document.getElementById("photoPreview").src || null,
+            note: notepad.value,
+            documents: selectedDocuments.map(doc => ({
+                name: doc.name,
+                data: doc.data
+            })),
+            theme: document.body.classList.contains("dark") ? "dark" : "light",
+            appState: {
+                isLoggedIn: document.getElementById("appPanel").style.display === "block"
+            },
+            savedAt: new Date().toISOString()
+        };
+        
+        localStorage.setItem("userProgress", JSON.stringify(userData));
+        lastSavedTime.all = new Date();
+        console.log("✅ All progress saved:", userData);
+        
+    } catch (error) {
+        console.error("❌ Error saving progress:", error);
+        if (error.name === "QuotaExceededError") {
+            alert("Storage limit reached. Please remove some documents.");
+        }
+    }
+}
 
-photoInput.addEventListener(
-    "change",
-    function () {
+/* ============================================================================
+   LOAD USER PROGRESS
+   ============================================================================ */
 
-        const file =
-            this.files[0];
-
-
-        if (!file) {
+function loadAllProgress() {
+    try {
+        const saved = localStorage.getItem("userProgress");
+        if (!saved) {
+            console.log("No saved progress found.");
             return;
         }
+        
+        const userData = JSON.parse(saved);
+        console.log("✅ Progress loaded:", userData);
+        
+        // Restore name
+        if (userData.name) {
+            nameInput.value = userData.name;
+        }
+        
+        // Restore photo
+        if (userData.photo) {
+            const photoPreview = document.getElementById("photoPreview");
+            photoPreview.src = userData.photo;
+            photoPreview.style.display = "block";
+            document.getElementById("photoPlaceholder").style.display = "none";
+            document.getElementById("profileImage").src = userData.photo;
+            document.getElementById("profileImage").style.display = "block";
+            document.getElementById("profilePlaceholder").style.display = "none";
+        }
+        
+        // Restore theme
+        if (userData.theme === "dark") {
+            document.body.classList.add("dark");
+            document.getElementById("themeButton").textContent = "☀️ Light Mode";
+        }
+        
+        // Restore documents
+        if (userData.documents && Array.isArray(userData.documents)) {
+            selectedDocuments = userData.documents;
+            displayDocuments();
+        }
+        
+        // Restore app state (auto-login if previously logged in)
+        if (userData.appState.isLoggedIn && userData.name) {
+            setTimeout(() => {
+                enterApp();
+                if (userData.note) {
+                    notepad.value = userData.note;
+                }
+            }, 100);
+        }
+        
+    } catch (error) {
+        console.error("❌ Error loading progress:", error);
+    }
+}
 
+/* ============================================================================
+   THEME MANAGEMENT
+   ============================================================================ */
 
-        const reader =
-            new FileReader();
+function loadTheme() {
+    const saved = localStorage.getItem("userProgress");
+    if (saved) {
+        const userData = JSON.parse(saved);
+        if (userData.theme === "dark") {
+            document.body.classList.add("dark");
+            document.getElementById("themeButton").textContent = "☀️ Light Mode";
+        }
+    }
+}
 
+function toggleTheme() {
+    document.body.classList.toggle("dark");
 
-        reader.onload =
-            function (event) {
+    const isDark = document.body.classList.contains("dark");
 
-                document.getElementById(
-                    "photoPreview"
-                ).src =
-                    event.target.result;
+    if (isDark) {
+        localStorage.setItem("theme", "dark");
+        document.getElementById("themeButton").textContent = "☀️ Light Mode";
+    } else {
+        localStorage.setItem("theme", "light");
+        document.getElementById("themeButton").textContent = "🌙 Dark Mode";
+    }
+    
+    debounceAutoSave();
+}
 
+/* ============================================================================
+   PHOTO UPLOAD & SAVE
+   ============================================================================ */
 
-                document.getElementById(
-                    "photoPreview"
-                ).style.display =
-                    "block";
+photoInput.addEventListener("change", function () {
+    const file = this.files[0];
 
+    if (!file) {
+        return;
+    }
 
-                document.getElementById(
-                    "photoPlaceholder"
-                ).style.display =
-                    "none";
+    const reader = new FileReader();
 
+    reader.onload = function (event) {
+        document.getElementById("photoPreview").src = event.target.result;
+        document.getElementById("photoPreview").style.display = "block";
+        document.getElementById("photoPlaceholder").style.display = "none";
+        
+        document.getElementById("profileImage").src = event.target.result;
+        document.getElementById("profileImage").style.display = "block";
+        document.getElementById("profilePlaceholder").style.display = "none";
+        
+        debounceAutoSave();
+    };
 
-                document.getElementById(
-                    "profileImage"
-                ).src =
-                    event.target.result;
+    reader.readAsDataURL(file);
+});
 
+/* ============================================================================
+   DOCUMENT UPLOAD & SAVE
+   ============================================================================ */
 
-                document.getElementById(
-                    "profileImage"
-                ).style.display =
-                    "block";
+documentInput.addEventListener("change", function () {
+    const files = Array.from(this.files);
 
+    files.forEach(file => {
+        const reader = new FileReader();
 
-                document.getElementById(
-                    "profilePlaceholder"
-                ).style.display =
-                    "none";
+        reader.onload = function (event) {
+            selectedDocuments.push({
+                name: file.name,
+                data: event.target.result,
+                addedAt: new Date().toISOString()
+            });
 
-            };
-
+            displayDocuments();
+            debounceAutoSave();
+        };
 
         reader.readAsDataURL(file);
+    });
 
-    }
-);
+    // Reset input
+    documentInput.value = "";
+});
 
-
-/* DOCUMENT UPLOAD */
-
-documentInput.addEventListener(
-    "change",
-    function () {
-
-        const files =
-            Array.from(this.files);
-
-
-        selectedDocuments =
-            selectedDocuments.concat(files);
-
-
-        displayDocuments();
-
-    }
-);
-
-
-/* DISPLAY DOCUMENTS */
+/* ============================================================================
+   DISPLAY DOCUMENTS
+   ============================================================================ */
 
 function displayDocuments() {
-
-    const loginList =
-        document.getElementById(
-            "loginDocuments"
-        );
-
-
-    const appList =
-        document.getElementById(
-            "appDocuments"
-        );
-
+    const loginList = document.getElementById("loginDocuments");
+    const appList = document.getElementById("appDocuments");
 
     loginList.innerHTML = "";
-
     appList.innerHTML = "";
 
+    selectedDocuments.forEach((doc, index) => {
+        const item = document.createElement("div");
+        item.className = "document-item";
 
-    selectedDocuments.forEach(
-        function (file, index) {
+        const name = document.createElement("span");
+        name.textContent = "📄 " + doc.name;
 
-            const item =
-                document.createElement(
-                    "div"
-                );
+        const button = document.createElement("button");
+        button.textContent = "Remove";
 
+        button.onclick = function () {
+            removeDocument(index);
+        };
 
-            item.className =
-                "document-item";
+        item.appendChild(name);
+        item.appendChild(button);
 
+        const appItem = item.cloneNode(true);
+        appItem.querySelector("button").onclick = function () {
+            removeDocument(index);
+        };
 
-            const name =
-                document.createElement(
-                    "span"
-                );
-
-
-            name.textContent =
-                "📄 " + file.name;
-
-
-            const button =
-                document.createElement(
-                    "button"
-                );
-
-
-            button.textContent =
-                "Remove";
-
-
-            button.onclick =
-                function () {
-
-                    removeDocument(index);
-
-                };
-
-
-            item.appendChild(name);
-
-            item.appendChild(button);
-
-
-            const loginItem =
-                item.cloneNode(true);
-
-
-            loginItem
-                .querySelector("button")
-                .onclick =
-                function () {
-
-                    removeDocument(index);
-
-                };
-
-
-            loginList.appendChild(
-                loginItem
-            );
-
-
-            appList.appendChild(
-                item
-            );
-
-        }
-    );
-
+        loginList.appendChild(item);
+        appList.appendChild(appItem);
+    });
 }
 
-
-/* REMOVE DOCUMENT */
+/* ============================================================================
+   REMOVE DOCUMENT
+   ============================================================================ */
 
 function removeDocument(index) {
-
-    selectedDocuments.splice(
-        index,
-        1
-    );
-
-
+    selectedDocuments.splice(index, 1);
     displayDocuments();
-
+    debounceAutoSave();
 }
 
-
-/* ENTER APPLICATION */
+/* ============================================================================
+   ENTER APPLICATION
+   ============================================================================ */
 
 function enterApp() {
-
-    const name =
-        nameInput.value.trim();
-
+    const name = nameInput.value.trim();
 
     if (name === "") {
-
-        alert(
-            "Please enter your name."
-        );
-
+        alert("Please enter your name.");
         nameInput.focus();
-
         return;
-
     }
 
+    document.getElementById("firstPage").style.display = "none";
+    document.getElementById("appPanel").style.display = "block";
 
-    document.getElementById(
-        "firstPage"
-    ).style.display =
-        "none";
+    document.getElementById("welcomeMessage").textContent = "Welcome " + name + "!";
 
-
-    document.getElementById(
-        "appPanel"
-    ).style.display =
-        "block";
-
-
-    document.getElementById(
-        "welcomeMessage"
-    ).textContent =
-        "Welcome " + name + "!";
-
-
-    document.getElementById(
-        "notepad"
-    ).value =
-        localStorage.getItem(
-            "myNote"
-        ) || "";
-
+    document.getElementById("notepad").value = localStorage.getItem("myNote") || "";
 
     displayDocuments();
-
+    
+    debounceAutoSave();
 }
 
+/* ============================================================================
+   KEYBOARD ENTER TO LOGIN
+   ============================================================================ */
 
-/* KEYBOARD ENTER */
-
-nameInput.addEventListener(
-    "keydown",
-    function (event) {
-
-        if (event.key === "Enter") {
-
-            event.preventDefault();
-
-            enterApp();
-
-        }
-
+nameInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        enterApp();
     }
-);
+});
 
-
-/* SAVE NOTE */
+/* ============================================================================
+   SAVE NOTE
+   ============================================================================ */
 
 function saveNote() {
+    const note = document.getElementById("notepad").value;
 
-    const note =
-        document.getElementById(
-            "notepad"
-        ).value;
+    localStorage.setItem("myNote", note);
 
-
-    localStorage.setItem(
-        "myNote",
-        note
-    );
-
-
-    alert(
-        "Your note has been saved."
-    );
-
+    showSaveIndicator("💾 Note saved!");
+    debounceAutoSave();
 }
 
+/* ============================================================================
+   AUTO-SAVE NOTE AS USER TYPES
+   ============================================================================ */
 
-/* CLEAR NOTE */
+notepad.addEventListener("input", function () {
+    debounceAutoSave();
+});
+
+nameInput.addEventListener("input", function () {
+    debounceAutoSave();
+});
+
+/* ============================================================================
+   CLEAR NOTE
+   ============================================================================ */
 
 function clearNote() {
-
-    document.getElementById(
-        "notepad"
-    ).value = "";
-
+    if (confirm("Are you sure you want to clear your note?")) {
+        document.getElementById("notepad").value = "";
+        debounceAutoSave();
+        showSaveIndicator("📝 Note cleared!");
+    }
 }
 
-
-/* DOWNLOAD NOTE */
+/* ============================================================================
+   DOWNLOAD NOTE
+   ============================================================================ */
 
 function downloadNote() {
-
-    const note =
-        document.getElementById(
-            "notepad"
-        ).value;
-
+    const note = document.getElementById("notepad").value;
 
     if (note.trim() === "") {
-
-        alert(
-            "There is nothing to download."
-        );
-
+        alert("There is nothing to download.");
         return;
-
     }
 
+    const file = new Blob([note], { type: "text/plain" });
 
-    const file =
-        new Blob(
-            [note],
-            {
-                type: "text/plain"
-            }
-        );
+    const link = document.createElement("a");
 
+    link.href = URL.createObjectURL(file);
 
-    const link =
-        document.createElement(
-            "a"
-        );
-
-
-    link.href =
-        URL.createObjectURL(file);
-
-
-    link.download =
-        "my-note.txt";
-
+    link.download = "my-note.txt";
 
     link.click();
 
-
-    URL.revokeObjectURL(
-        link.href
-    );
-
+    URL.revokeObjectURL(link.href);
 }
 
-
-/* LOGOUT */
+/* ============================================================================
+   LOGOUT
+   ============================================================================ */
 
 function logout() {
-
-    document.getElementById(
-        "appPanel"
-    ).style.display =
-        "none";
-
-
-    document.getElementById(
-        "firstPage"
-    ).style.display =
-        "flex";
-
+    saveAllProgress();
+    
+    document.getElementById("appPanel").style.display = "none";
+    document.getElementById("firstPage").style.display = "flex";
 
     nameInput.focus();
-
+    
+    showSaveIndicator("👋 Progress saved! Logged out.");
 }
 
-
-/* START */
+/* ============================================================================
+   INITIALIZATION
+   ============================================================================ */
 
 loadTheme();
+loadAllProgress();
+
+// Auto-save every 30 seconds while app is open
+setInterval(() => {
+    if (document.getElementById("appPanel").style.display === "block") {
+        saveAllProgress();
+    }
+}, 30000);
+
+// Save progress before page unload
+window.addEventListener("beforeunload", () => {
+    saveAllProgress();
+});
 
 </script>
 
